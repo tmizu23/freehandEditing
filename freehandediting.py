@@ -99,7 +99,7 @@ class FreehandEditing:
     def freehandediting(self):
         self.canvas.setMapTool(self.tool)
         self.freehand_edit.setChecked(True)
-        self.tool.rbFinished['QgsGeometry*'].connect(self.createFeature)
+        self.tool.rbFinished['QgsGeometry*','bool'].connect(self.createFeature)
         self.active = True
 
     def toggle(self):
@@ -139,13 +139,13 @@ class FreehandEditing:
                 except TypeError:  # missing connection
                     pass
 
-    def createFeature(self, geom):
+    def createFeature(self, geom, snapavoidbool):
         settings = QSettings()
         mc = self.canvas
         layer = mc.currentLayer()
         if layer is None:
             return
-        renderer = mc.mapRenderer()
+        renderer = mc.mapSettings()
         layerCRSSrsid = layer.crs().srsid()
         projectCRSSrsid = renderer.destinationCrs().srsid()
         provider = layer.dataProvider()
@@ -162,7 +162,8 @@ class FreehandEditing:
             geom.transform(QgsCoordinateTransform(projectCRSSrsid,
                                                   layerCRSSrsid))
         s = geom.simplify(tolerance)
-
+        if snapavoidbool:
+           s.avoidIntersections()
         #validate geometry
         if not (s.validateGeometry()):
             f.setGeometry(s)
@@ -180,26 +181,23 @@ class FreehandEditing:
 
         # add attribute fields to feature
         fields = layer.pendingFields()
-        if QGis.QGIS_VERSION_INT >= 10900:  # vector api change update
-            f.initAttributes(fields.count())
-            for i in range(fields.count()):
-                if provider.defaultValue(i):
-                    f.setAttribute(i, provider.defaultValue(i))
-        else:
-            for i in fields:
-                f.addAttribute(i, provider.defaultValue(i))
+        f.initAttributes(fields.count())
+        for i in range(fields.count()):
+            if provider.defaultValue(i):
+                f.setAttribute(i, provider.defaultValue(i))
 
-        layer.beginEditCommand("Feature added")
+
         if (settings.value(
                 "/qgis/digitizing/disable_enter_attribute_values_dialog",
                 False, type=bool)):
+            layer.beginEditCommand("Feature added")
             layer.addFeature(f)
             layer.endEditCommand()
         else:
             dlg = self.iface.getFeatureForm(layer, f)
             self.tool.setIgnoreClick(True)
+            layer.beginEditCommand("Feature added")
             if dlg.exec_():
-                layer.addFeature(f)
                 layer.endEditCommand()
             else:
                 layer.destroyEditCommand()
@@ -208,7 +206,7 @@ class FreehandEditing:
     def deactivate(self):
         self.freehand_edit.setChecked(False)
         if self.active:
-            self.tool.rbFinished['QgsGeometry*'].disconnect(self.createFeature)
+            self.tool.rbFinished['QgsGeometry*','bool'].disconnect(self.createFeature)
         self.active = False
 
     def unload(self):
