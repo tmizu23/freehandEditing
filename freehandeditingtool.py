@@ -13,7 +13,9 @@ class FreehandEditingTool(QgsMapTool):
         QgsMapTool.__init__(self, canvas)
         self.canvas = canvas
         self.rb = None
-        self.mCtrl = None
+        self.vmarker = None
+        self.pointMap = None
+        self.release = True
         self.drawing = False
         self.ignoreclick = False
         #our own fancy cursor
@@ -41,8 +43,8 @@ class FreehandEditingTool(QgsMapTool):
     # def keyPressEvent(self, event):
     #     QgsMessageLog.logMessage("key:{}".format(event.key()), 'MyPlugin', QgsMessageLog.INFO)
     #     if event.key() == Qt.Key_Control:
-    #         self.mCtrl = True
-    #
+    #         self.mCtrl = not self.mCtrl
+
     # def keyReleaseEvent(self, event):
     #     if event.key() == Qt.Key_Control:
     #         self.mCtrl = False
@@ -68,15 +70,15 @@ class FreehandEditingTool(QgsMapTool):
                         point = self.toLayerCoordinates(layer, event.pos())
             else:
                 point = self.toLayerCoordinates(layer, event.pos())
-            pointMap = self.toMapCoordinates(layer, point)
-            self.rb.addPoint(pointMap)
+            self.pointMap = self.toMapCoordinates(layer, point)
+            self.rb.addPoint(self.pointMap)
         else:
             point = self.toLayerCoordinates(layer, event.pos())
-            pointMap = self.toMapCoordinates(layer, point)
-            self.rb.addPoint(pointMap)
+            self.pointMap = self.toMapCoordinates(layer, point)
+            self.rb.addPoint(self.pointMap)
 
     def canvasPressEvent(self, event):
-        if self.ignoreclick or self.drawing:
+        if self.ignoreclick:
             # ignore secondary canvasPressEvents if already drag-drawing
             # NOTE: canvasReleaseEvent will still occur (ensures rb is deleted)
             # click on multi-button input device will halt drag-drawing
@@ -84,7 +86,32 @@ class FreehandEditingTool(QgsMapTool):
         layer = self.canvas.currentLayer()
         if not layer:
             return
+        button_type = event.button()
+        if self.drawing and button_type == 1 and self.release:
+            self.release = False
+            return
+        elif  self.drawing and button_type == 2:
+            if self.ignoreclick:
+                return
+            layer = self.canvas.currentLayer()
+            if not layer:
+                return
+            self.drawing = False
+            if not self.rb:
+                return
+            if self.rb.numberOfVertices() > 2:
+                geom = self.rb.asGeometry()
+                self.rbFinished.emit(geom, self.snapavoidbool)
+            # reset rubberband and refresh the canvas
+            self.rb.reset()
+            self.rb = None
+            self.canvas.scene().removeItem(self.vmarker)
+            self.vmarker = None
+            self.isPolygon = (self.type != QGis.Line)
+            self.canvas.refresh()
+            return
         #QgsMessageLog.logMessage("{}".format(layer.id()), 'MyPlugin', QgsMessageLog.INFO)
+        self.release = False
         self.snapping = True
         proj = QgsProject.instance()
         snapmode = proj.readEntry('Digitizing', 'SnappingMode')[0]
@@ -109,18 +136,21 @@ class FreehandEditingTool(QgsMapTool):
         if self.isPolygon:
             #print "self is a polygon"
             self.rb = QgsRubberBand(self.canvas, QGis.Polygon)
-            self.rb.setColor(QColor(255, 0, 0, 63))
+            self.rb.setColor(QColor(255, 0, 0, 150))
+            self.rb.setFillColor(QColor(255, 255, 255, 10))
             self.rb.setWidth(2)
         else:
             #print "self is not a polygon"
             self.rb = QgsRubberBand(self.canvas)
             self.rb.setColor(QColor(255, 0, 0, 150))
             self.rb.setWidth(1)
+        self.vmarker = QgsVertexMarker(self.canvas)
+        self.vmarker.setIconType(QgsVertexMarker.ICON_BOX)
         self.getSnapPoint(event,layer)
 
 
     def canvasMoveEvent(self, event):
-        if self.ignoreclick or not self.rb:
+        if self.ignoreclick or not self.rb or self.release:
             return
         layer = self.canvas.currentLayer()
         if not layer:
@@ -128,22 +158,8 @@ class FreehandEditingTool(QgsMapTool):
         self.getSnapPoint(event,layer)
 
     def canvasReleaseEvent(self, event):
-        if self.ignoreclick:
-            return
-        layer = self.canvas.currentLayer()
-        if not layer:
-            return
-        self.drawing = False
-        if not self.rb:
-            return
-        if self.rb.numberOfVertices() > 2:
-            geom = self.rb.asGeometry()
-            self.rbFinished.emit(geom,self.snapavoidbool)
-        # reset rubberband and refresh the canvas
-        self.rb.reset()
-        self.rb = None
-        self.isPolygon = (self.type != QGis.Line)
-        self.canvas.refresh()
+        self.vmarker.setCenter(self.pointMap)
+        self.release = True
 
     def setIgnoreClick(self, ignore):
         """Used to keep the tool from registering clicks during modal dialogs"""
