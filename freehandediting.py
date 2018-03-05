@@ -100,6 +100,7 @@ class FreehandEditing:
         self.canvas.setMapTool(self.tool)
         self.freehand_edit.setChecked(True)
         self.tool.rbFinished['QgsGeometry*','bool'].connect(self.createFeature)
+        self.tool.editFinished['QgsGeometry*', 'int'].connect(self.editFeature)
         self.active = True
 
     def toggle(self):
@@ -177,6 +178,7 @@ class FreehandEditing:
             if reply == QMessageBox.Yes:
                 f.setGeometry(s)
             else:
+                layer.endEditCommand()
                 return
 
         # add attribute fields to feature
@@ -190,23 +192,63 @@ class FreehandEditing:
         if (settings.value(
                 "/qgis/digitizing/disable_enter_attribute_values_dialog",
                 False, type=bool)):
-            layer.beginEditCommand("Feature added")
+            #layer.beginEditCommand("Feature added")
             layer.addFeature(f)
             layer.endEditCommand()
         else:
             dlg = self.iface.getFeatureForm(layer, f)
             self.tool.setIgnoreClick(True)
-            layer.beginEditCommand("Feature added")
+            #layer.beginEditCommand("Feature added")
             if dlg.exec_():
                 layer.endEditCommand()
             else:
                 layer.destroyEditCommand()
             self.tool.setIgnoreClick(False)
 
+    def editFeature(self, geom, fid):
+        settings = QSettings()
+        mc = self.canvas
+        layer = mc.currentLayer()
+        if layer is None:
+            return
+        renderer = mc.mapSettings()
+        layerCRSSrsid = layer.crs().srsid()
+        projectCRSSrsid = renderer.destinationCrs().srsid()
+
+        if layer.crs().projectionAcronym() == "longlat":
+            tolerance = 0.000
+        else:
+            tolerance = settings.value("/freehandEdit/tolerance",
+                                       0.000, type=float)
+
+        #On the Fly reprojection.
+        if layerCRSSrsid != projectCRSSrsid:
+            geom.transform(QgsCoordinateTransform(projectCRSSrsid,
+                                                  layerCRSSrsid))
+        s = geom.simplify(tolerance)
+
+        #validate geometry
+
+        if s.validateGeometry():
+            reply = QMessageBox.question(
+                self.iface.mainWindow(),
+                'Feature not valid',
+                "The geometry of the feature you just added isn't valid."
+                "Do you want to use it anyway?",
+                QMessageBox.Yes, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+
+        layer.beginEditCommand("Feature edited")
+        layer.changeGeometry(fid, s)
+        layer.endEditCommand()
+
+
     def deactivate(self):
         self.freehand_edit.setChecked(False)
         if self.active:
             self.tool.rbFinished['QgsGeometry*','bool'].disconnect(self.createFeature)
+            self.tool.editFinished['QgsGeometry*', 'int'].disconnect(self.editFeature)
         self.active = False
 
     def unload(self):
