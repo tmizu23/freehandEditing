@@ -93,25 +93,32 @@ class FreehandEditingTool(QgsMapTool):
                 point = result[0].snappedVertex
                 self.snapmarker.setCenter(point)
                 self.snapmarker.show()
+                point = self.toLayerCoordinates(layer,point)
+                #QgsMessageLog.logMessage("a".format(self.snapping), 'MyPlugin', QgsMessageLog.INFO)
             else:
                 point = self.toLayerCoordinates(layer, event.pos())
+                #QgsMessageLog.logMessage("b".format(self.snapping), 'MyPlugin', QgsMessageLog.INFO)
         else:
             point = self.toLayerCoordinates(layer, event.pos())
+            #QgsMessageLog.logMessage("c".format(self.snapping), 'MyPlugin', QgsMessageLog.INFO)
+
+        pnt = self.toMapCoordinates(layer, point)
 
         #新規で再開地点にスナップ
         d = 10
-        if self.state == "draw_suspended":
-            if (self.lastpoint.x()-d <= point.x() <= self.lastpoint.x()+d) and (self.lastpoint.y()-d<=point.y() <= self.lastpoint.y()+d):
+        if self.state == "draw_suspended" or self.state == "edit_suspended":
+            if (self.lastpoint.x()-d <= pnt.x() <= self.lastpoint.x()+d) and (self.lastpoint.y()-d<=pnt.y() <= self.lastpoint.y()+d):
                 self.snapmarker.setCenter(self.lastpoint)
                 self.snapmarker.show()
-                point = self.lastpoint
+                pnt = self.lastpoint
+                #QgsMessageLog.logMessage("d".format(self.snapping), 'MyPlugin', QgsMessageLog.INFO)
         #新規でポリゴンを閉じる時、スタート地点にスナップ
-        if self.state=="drawing" or self.state=="editing":
-            if (self.startpoint.x()-d <= point.x() <= self.startpoint.x()+d) and (self.startpoint.y()-d<=point.y() <= self.startpoint.y()+d):
+        if self.state=="drawing" or self.state=="editing":#or self.state=="selected":
+            if (self.startpoint.x()-d <= pnt.x() <= self.startpoint.x()+d) and (self.startpoint.y()-d<=pnt.y() <= self.startpoint.y()+d):
+                #QgsMessageLog.logMessage("e".format(self.snapping), 'MyPlugin', QgsMessageLog.INFO)
                 self.snapmarker.setCenter(self.startpoint)
                 self.snapmarker.show()
-                point= self.startpoint
-        pnt = self.toMapCoordinates(layer, point)
+                pnt= self.startpoint
         return pnt,result
 
     def objselect(self,event):
@@ -168,16 +175,19 @@ class FreehandEditingTool(QgsMapTool):
             d = self.canvas.mapUnitsPerPixel() * 4
             request = QgsFeatureRequest()
             request.setFilterRect(QgsRectangle((point.x() - d), (point.y() - d), (point.x() + d), (point.y() + d)))
-            select_feat = self.layer.getFeatures(request).next()
-            self.featid_list.remove(select_feat.id())
-            features = self.layer.getFeatures(QgsFeatureRequest().setFilterFids(self.featid_list))
-            geom = QgsGeometry(select_feat.geometry())
-            for f in features:
-                geom = QgsGeometry(geom.combine(f.geometry()))
-            self.layer.beginEditCommand("Feature merge")
-            self.layer.deleteFeatures(self.featid_list)
-            self.layer.changeGeometry(select_feat.id(), geom)
-            self.layer.endEditCommand()
+            f = [feat for feat in self.layer.getFeatures(request)]  # only one because of setlimit(1)
+            if len(f)>0:
+                select_feat = f[0]
+                if select_feat.id() in self.featid_list:
+                    self.featid_list.remove(select_feat.id())
+                    features = self.layer.getFeatures(QgsFeatureRequest().setFilterFids(self.featid_list))
+                    geom = QgsGeometry(select_feat.geometry())
+                    for f in features:
+                        geom = QgsGeometry(geom.combine(f.geometry()))
+                    self.layer.beginEditCommand("Feature merge")
+                    self.layer.deleteFeatures(self.featid_list)
+                    self.layer.changeGeometry(select_feat.id(), geom)
+                    self.layer.endEditCommand()
             self.state = "free"
             self.canvas.currentLayer().removeSelection()
             self.featid_list = []
@@ -220,10 +230,14 @@ class FreehandEditingTool(QgsMapTool):
         # finish editing
         elif button_type == 2 and self.state=="edit_suspended":
             if self.rb.numberOfVertices() > 2:
+                rbgeom=self.rb.asGeometry()
+                self.checkcrs()
+                if self.layerCRSSrsid != self.projectCRSSrsid:
+                    rbgeom.transform(QgsCoordinateTransform(self.projectCRSSrsid,self.layerCRSSrsid))
                 features=self.layer.getFeatures(QgsFeatureRequest().setFilterFids(self.featid_list))
                 for f in features:
                     featid = f.id()
-                    drawline = QgsGeometry(self.rb.asGeometry())
+                    drawline = QgsGeometry(rbgeom)
                     startpnt = drawline.asPolyline()[0]
                     lastpnt = drawline.asPolyline()[-1]
                     #分割
@@ -237,18 +251,18 @@ class FreehandEditingTool(QgsMapTool):
                             tolerance = settings.value("/freehandEdit/tolerance",
                                                        0.000, type=float)
                         self.layer.beginEditCommand("Feature split")
-                        drawline = self.rb.asGeometry()
+                        drawline = rbgeom
                         s = drawline.simplify(tolerance)
                         splitline = [QgsPoint(pair[0], pair[1]) for pair in s.asPolyline()]
                         self.layer.splitFeatures(splitline,True)
                         self.layer.endEditCommand()
 
                     # 穴を開ける.交差していない。始点と終点が同じ
-                    elif f.geometry().contains(self.rb.asGeometry()) and startpnt[0]==lastpnt[0] and startpnt[1]==lastpnt[1]:
+                    elif f.geometry().contains(rbgeom) and startpnt[0]==lastpnt[0] and startpnt[1]==lastpnt[1]:
                         obj = []
                         for poly in f.geometry().asPolygon():
                             obj.append([QgsPoint(pair[0], pair[1]) for pair in poly])
-                        polyline = self.rb.asGeometry().asPolyline()
+                        polyline = rbgeom.asPolyline()
                         ring = [QgsPoint(pair[0], pair[1]) for pair in polyline]
                         obj.append(ring)
                         geom = QgsGeometry.fromPolygon(obj)
@@ -271,7 +285,7 @@ class FreehandEditingTool(QgsMapTool):
                             if snapstart and snaplast:
                                 startidx = geom.closestVertexWithContext(startpnt)[1]
                                 lastidx = geom.closestVertexWithContext(lastpnt)[1]
-                                polyline = self.rb.asGeometry().asPolyline()
+                                polyline = rbgeom.asPolyline()
                                 poly = self.objmodify(geom, polyline, startidx, lastidx)
                             # 始点、終点ともにスナップしていない。最初と最後の交差部を始点、終点にする
                             elif not snapstart and not snaplast and len(splits) > 1:
@@ -445,6 +459,12 @@ class FreehandEditingTool(QgsMapTool):
         self.rb.setColor(QColor(255, 0, 0, 150))
         self.rb.setWidth(2)
 
+    def checkcrs(self):
+        renderer = self.canvas.mapSettings()
+        self.layerCRSSrsid = self.layer.crs().srsid()
+        self.projectCRSSrsid = renderer.destinationCrs().srsid()
+        #QgsMessageLog.logMessage("{},{}".format(self.layerCRSSrsid,self.projectCRSSrsid), 'MyPlugin', QgsMessageLog.INFO)
+
     def check_snapsetting(self):
         proj = QgsProject.instance()
         snapmode = proj.readEntry('Digitizing', 'SnappingMode')[0]
@@ -453,11 +473,15 @@ class FreehandEditingTool(QgsMapTool):
             snaplayer = proj.readListEntry('Digitizing', 'LayerSnappingList')[0]
             snapenabled = proj.readListEntry('Digitizing', 'LayerSnappingEnabledList')[0]
             snapavoid = proj.readListEntry('Digitizing', 'AvoidIntersectionsList')[0]
-            snaptype = snapenabled[snaplayer.index(self.canvas.currentLayer().id())]
-            #QgsMessageLog.logMessage("snaptype:{}".format(snaptype), 'MyPlugin', QgsMessageLog.INFO)
-            self.snapavoidbool = self.canvas.currentLayer().id() in snapavoid
-            if snaptype == "disabled":
-                self.snapping = False
+            layerid = self.canvas.currentLayer().id()
+            if layerid in snaplayer:#新規のレイヤーだとない場合がある？
+                snaptype = snapenabled[snaplayer.index(layerid)]
+                #QgsMessageLog.logMessage("snaptype:{}".format(snaptype), 'MyPlugin', QgsMessageLog.INFO)
+                self.snapavoidbool = self.canvas.currentLayer().id() in snapavoid
+                if snaptype == "disabled":
+                    self.snapping = False
+                else:
+                    self.snapping = True
             else:
                 self.snapping = True
         else:
@@ -478,8 +502,10 @@ class FreehandEditingTool(QgsMapTool):
     def activate(self):
         mc = self.canvas
         mc.setCursor(self.cursor)
-        # Check whether Geometry is a Line or a Polygon
         self.layer = mc.currentLayer()
+        self.checkcrs()
+        # Check whether Geometry is a Line or a Polygon
+
         self.snapmarker = QgsVertexMarker(self.canvas)
         self.snapmarker.setIconType(QgsVertexMarker.ICON_BOX)
         self.snapmarker.setColor(QColor(255,165,0))

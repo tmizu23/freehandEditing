@@ -222,9 +222,9 @@ class FreehandEditing:
                                        0.000, type=float)
 
         #On the Fly reprojection.
-        if layerCRSSrsid != projectCRSSrsid:
-            geom.transform(QgsCoordinateTransform(projectCRSSrsid,
-                                                  layerCRSSrsid))
+        # if layerCRSSrsid != projectCRSSrsid:
+        #     geom.transform(QgsCoordinateTransform(projectCRSSrsid,
+        #                                           layerCRSSrsid))
         s = geom.simplify(tolerance)
 
         #validate geometry
